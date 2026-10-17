@@ -34,16 +34,9 @@ type
     Parts: array of TFeatureGeometry;    { multi-* }
   end;
 
-  TAttribute = record
-    Name: string;
-    Value: string;
-  end;
-  TAttributeArray = array of TAttribute;
-
   TFeature = record
     FID: Int64;
     Geometry: TFeatureGeometry;
-    Attributes: TAttributeArray;
   end;
   TFeatureArray = array of TFeature;
 

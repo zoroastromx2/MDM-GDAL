@@ -8,11 +8,13 @@ uses
   Vcl.Forms,
   Vcl.Controls,
   Vcl.Grids,
-  GeometryModel;
+  GeometryModel,
+  VectorLayer;
 
 type
   {
     Dialogo no modal que muestra los atributos (nombre/valor) de una entidad.
+    Los atributos se leen bajo demanda desde el datasource (capa + indice).
     Se construye por codigo (sin .dfm) para simplificar.
   }
   TIdentifyForm = class(TForm)
@@ -20,7 +22,7 @@ type
     FGrid: TStringGrid;
   public
     constructor Create(AOwner: TComponent); override;
-    procedure ShowFeature(const Feature: TFeature);
+    procedure ShowFeature(const Layer: TVectorLayer; FeatureIndex: Integer);
   end;
 
 implementation
@@ -47,17 +49,25 @@ begin
   FGrid.Options := FGrid.Options + [goColSizing, goRowSelect];
 end;
 
-procedure TIdentifyForm.ShowFeature(const Feature: TFeature);
+procedure TIdentifyForm.ShowFeature(const Layer: TVectorLayer; FeatureIndex: Integer);
 var
+  Names, Values: TStringArray;
   i: Integer;
 begin
-  FGrid.RowCount := Length(Feature.Attributes) + 2;
+  if (Layer = nil) or (FeatureIndex < 0) or (FeatureIndex >= Layer.FeatureCount) then
+    Exit;
+
+  Layer.GetFeatureAttributes(FeatureIndex, Names, Values);
+
+  FGrid.RowCount := Length(Values) + 2;
   FGrid.Cells[0, 1] := 'FID';
-  FGrid.Cells[1, 1] := IntToStr(Feature.FID);
-  for i := 0 to High(Feature.Attributes) do begin
-    FGrid.Cells[0, i + 2] := Feature.Attributes[i].Name;
-    FGrid.Cells[1, i + 2] := Feature.Attributes[i].Value;
+  FGrid.Cells[1, 1] := IntToStr(Layer.Features[FeatureIndex].FID);
+  for i := 0 to High(Values) do begin
+    FGrid.Cells[0, i + 2] := Names[i];
+    FGrid.Cells[1, i + 2] := Values[i];
   end;
+
+  Caption := 'Atributos de la entidad - ' + Layer.LayerName;
 end;
 
 end.

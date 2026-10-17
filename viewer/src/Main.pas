@@ -88,6 +88,7 @@ type
     procedure ShowSelectedLayerAttributes;
     procedure SyncParentCheck(node: TTreeNode);
     procedure UpdateStatus;
+    procedure LoadProgress(const LayerName: string; Current, Total: Integer);
     procedure OpenFile(const FileName: string);
     procedure RebuildTree;
     function NodeLayerIndex(node: TTreeNode): Integer;
@@ -290,9 +291,9 @@ begin
     Exit;
 
   { FTree.Selected puede no cambiar al pulsar el checkbox; se usa el nodo
-    bajo el cursor. El control alterna el checkbox justo despues de este
-    evento, por lo que el estado nuevo es "not node.Checked". }
-  newState := not node.Checked;
+    bajo el cursor. El control ya alterno el checkbox antes de este evento,
+    por lo que node.Checked es el estado nuevo. }
+  newState := node.Checked;
   changed := False;
 
   if node.Data = nil then begin
@@ -390,27 +391,43 @@ begin
   FAttributes.Show;
 end;
 
+procedure TMainForm.LoadProgress(const LayerName: string; Current, Total: Integer);
+begin
+  if Total > 0 then
+    StatusBar1.SimpleText := Format('Cargando %s: %d / %d', [LayerName, Current, Total])
+  else
+    StatusBar1.SimpleText := Format('Cargando %s: %d', [LayerName, Current]);
+  Application.ProcessMessages;
+end;
+
 procedure TMainForm.OpenFile(const FileName: string);
 var
   Layers: TArray<TVectorLayer>;
   i: Integer;
   c: TColor;
 begin
+  miFile.Enabled := False;
+  miView.Enabled := False;
   try
-    Layers := TVectorLayer.LoadLayers(FileName);
-    for i := 0 to High(Layers) do begin
-      c := LayerPalette[FNextColor mod Length(LayerPalette)];
-      Layers[i].FillColor := c;
-      Layers[i].LineColor := c;
-      Inc(FNextColor);
-      FLayers.Add(Layers[i]);
+    try
+      Layers := TVectorLayer.LoadLayers(FileName, LoadProgress);
+      for i := 0 to High(Layers) do begin
+        c := LayerPalette[FNextColor mod Length(LayerPalette)];
+        Layers[i].FillColor := c;
+        Layers[i].LineColor := c;
+        Inc(FNextColor);
+        FLayers.Add(Layers[i]);
+      end;
+      RebuildTree;
+      FCanvas.ZoomToFit;
+      UpdateStatus;
+    except
+      on E: Exception do
+        ShowMessage('Error al abrir el archivo:' + sLineBreak + E.Message);
     end;
-    RebuildTree;
-    FCanvas.ZoomToFit;
-    UpdateStatus;
-  except
-    on E: Exception do
-      ShowMessage('Error al abrir el archivo:' + sLineBreak + E.Message);
+  finally
+    miFile.Enabled := True;
+    miView.Enabled := True;
   end;
 end;
 
@@ -439,7 +456,7 @@ begin
     Exit;
   FCanvas.IdentifyAt(ScreenX, ScreenY, 5, li, fi);
   if (li >= 0) and (fi >= 0) then begin
-    FIdentify.ShowFeature(FLayers[li].Features[fi]);
+    FIdentify.ShowFeature(FLayers[li], fi);
     FIdentify.Show;
   end;
 end;

@@ -13,6 +13,9 @@ type
   EVectorLayerError = class(Exception);
 
   TStringArray = array of string;
+  TAttributeRowEvent = function(const Values: TStringArray): Boolean of object;
+  TLoadProgressEvent = procedure(const LayerName: string;
+    Current, Total: Integer) of object;
 
   {
     Abre un archivo vectorial con OGR, extrae todas las entidades a un modelo
@@ -27,6 +30,8 @@ type
     FExtent: TExtent;
     FFieldCount: Integer;
     FFieldNames: TStringArray;
+    FLayerIndex: Integer;
+    FProgress: TLoadProgressEvent;
     FVisible: Boolean;
     FFillEnabled: Boolean;
     FFillColor: TColor;
@@ -37,11 +42,17 @@ type
     procedure ExtractLayer(layer: OGRLayerH);
   public
     constructor Create;
-    procedure Load(const FileName: string);
+    procedure Load(const FileName: string;
+      Progress: TLoadProgressEvent = nil);
     procedure Clear;
-    class function LoadLayers(const FileName: string): TArray<TVectorLayer>;
+    class function LoadLayers(const FileName: string;
+      Progress: TLoadProgressEvent = nil): TArray<TVectorLayer>;
+    function GetFeatureAttributes(FeatureIndex: Integer;
+      out Names, Values: TStringArray): Boolean;
+    procedure ForEachAttributeRow(const Callback: TAttributeRowEvent);
 
     property FileName: string read FFileName;
+    property LayerIndex: Integer read FLayerIndex;
     property LayerName: string read FLayerName;
     property Features: TFeatureArray read FFeatures;
     property Extent: TExtent read FExtent;
@@ -186,6 +197,8 @@ begin
   SetLength(FFeatures, count);
   n := 0;
 
+  ExtentReset(FExtent);
+
   OGR_L_ResetReading(layer);
   feat := OGR_L_GetNextFeature(layer);
   while feat <> nil do begin
@@ -194,25 +207,29 @@ begin
 
     featRec.FID := OGR_F_GetFID(feat);
     featRec.Geometry := GeometryToModel(OGR_F_GetGeometryRef(feat));
-
-    SetLength(featRec.Attributes, fieldCount);
-    for i := 0 to fieldCount - 1 do begin
-      featRec.Attributes[i].Name := FFieldNames[i];
-      featRec.Attributes[i].Value := UTF8ToString(OGR_F_GetFieldAsString(feat, i));
-    end;
+    GeometryExtent(featRec.Geometry, FExtent);
 
     FFeatures[n] := featRec;
     Inc(n);
+
+    if Assigned(FProgress) and ((n mod 5000) = 0) then
+      FProgress(FLayerName, n, count);
 
     OGR_F_Destroy(feat);
     feat := OGR_L_GetNextFeature(layer);
   end;
   SetLength(FFeatures, n);
 
-  FExtent := FeaturesExtent(FFeatures);
+  if Assigned(FProgress) then begin
+    if count > 0 then
+      FProgress(FLayerName, n, count)
+    else
+      FProgress(FLayerName, n, n);
+  end;
 end;
 
-procedure TVectorLayer.Load(const FileName: string);
+procedure TVectorLayer.Load(const FileName: string;
+  Progress: TLoadProgressEvent);
 var
   utf8: UTF8String;
   ds: OGRDataSourceH;
@@ -220,6 +237,8 @@ var
 begin
   Clear;
   FFileName := FileName;
+  FLayerIndex := 0;
+  FProgress := Progress;
 
   OGRRegisterAll;
   utf8 := UTF8String(FileName);
@@ -241,7 +260,8 @@ begin
   end;
 end;
 
-class function TVectorLayer.LoadLayers(const FileName: string): TArray<TVectorLayer>;
+class function TVectorLayer.LoadLayers(const FileName: string;
+  Progress: TLoadProgressEvent): TArray<TVectorLayer>;
 var
   utf8: UTF8String;
   ds: OGRDataSourceH;
@@ -267,7 +287,106 @@ begin
 
       Result[i] := TVectorLayer.Create;
       Result[i].FFileName := FileName;
+      Result[i].FLayerIndex := i;
+      Result[i].FProgress := Progress;
       Result[i].ExtractLayer(layer);
+    end;
+  finally
+    OGRReleaseDataSource(ds);
+  end;
+end;
+
+function TVectorLayer.GetFeatureAttributes(FeatureIndex: Integer;
+  out Names, Values: TStringArray): Boolean;
+var
+  utf8: UTF8String;
+  ds: OGRDataSourceH;
+  layer: OGRLayerH;
+  feat: OGRFeatureH;
+  featDefn: OGRFeatureDefnH;
+  fieldCount, i: Integer;
+begin
+  Result := False;
+  Names := nil;
+  Values := nil;
+
+  if (FeatureIndex < 0) or (FeatureIndex >= Length(FFeatures)) then
+    Exit;
+  if FFileName = '' then
+    Exit;
+
+  OGRRegisterAll;
+  utf8 := UTF8String(FFileName);
+  ds := OGROpen(PAnsiChar(utf8), 0, nil);
+  if ds = nil then
+    raise EVectorLayerError.Create('No se pudo abrir el archivo: ' + FFileName);
+
+  try
+    layer := OGR_DS_GetLayer(ds, FLayerIndex);
+    if layer = nil then
+      raise EVectorLayerError.Create(Format('No se pudo obtener la capa %d.', [FLayerIndex]));
+
+    feat := OGR_L_GetFeature(layer, LongInt(FFeatures[FeatureIndex].FID));
+    if feat = nil then
+      Exit;
+
+    try
+      featDefn := OGR_L_GetLayerDefn(layer);
+      fieldCount := OGR_FD_GetFieldCount(featDefn);
+      SetLength(Names, fieldCount);
+      SetLength(Values, fieldCount);
+      for i := 0 to fieldCount - 1 do begin
+        Names[i] := UTF8ToString(OGR_Fld_GetNameRef(OGR_FD_GetFieldDefn(featDefn, i)));
+        Values[i] := UTF8ToString(OGR_F_GetFieldAsString(feat, i));
+      end;
+      Result := True;
+    finally
+      OGR_F_Destroy(feat);
+    end;
+  finally
+    OGRReleaseDataSource(ds);
+  end;
+end;
+
+procedure TVectorLayer.ForEachAttributeRow(const Callback: TAttributeRowEvent);
+var
+  utf8: UTF8String;
+  ds: OGRDataSourceH;
+  layer: OGRLayerH;
+  feat: OGRFeatureH;
+  featDefn: OGRFeatureDefnH;
+  fieldCount, i: Integer;
+  Values: TStringArray;
+begin
+  if (FFileName = '') or (not Assigned(Callback)) then
+    Exit;
+
+  OGRRegisterAll;
+  utf8 := UTF8String(FFileName);
+  ds := OGROpen(PAnsiChar(utf8), 0, nil);
+  if ds = nil then
+    raise EVectorLayerError.Create('No se pudo abrir el archivo: ' + FFileName);
+
+  try
+    layer := OGR_DS_GetLayer(ds, FLayerIndex);
+    if layer = nil then
+      raise EVectorLayerError.Create(Format('No se pudo obtener la capa %d.', [FLayerIndex]));
+
+    featDefn := OGR_L_GetLayerDefn(layer);
+    fieldCount := OGR_FD_GetFieldCount(featDefn);
+    SetLength(Values, fieldCount);
+
+    OGR_L_ResetReading(layer);
+    feat := OGR_L_GetNextFeature(layer);
+    while feat <> nil do begin
+      for i := 0 to fieldCount - 1 do
+        Values[i] := UTF8ToString(OGR_F_GetFieldAsString(feat, i));
+      if not Callback(Values) then begin
+        OGR_F_Destroy(feat);
+        Break;
+      end;
+      OGR_F_Destroy(feat);
+      feat := OGR_L_GetNextFeature(layer);
     end;
   finally
     OGRReleaseDataSource(ds);
