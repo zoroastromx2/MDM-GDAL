@@ -1,0 +1,21 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "name": "Cuadrado", "value": 5 },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[30, 30], [40, 30], [40, 40], [30, 40], [30, 30]]]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "name": "Punto D", "value": 7 },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [35, 35]
+      }
+    }
+  ]
+}
