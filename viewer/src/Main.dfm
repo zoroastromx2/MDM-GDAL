@@ -1,4 +1,4 @@
-object MainForm: TMainForm
+﻿object MainForm: TMainForm
   Left = 0
   Top = 0
   Caption = 'IRIS Viewer - Visor de datos vectoriales'
@@ -54,6 +54,11 @@ object MainForm: TMainForm
         Caption = 'Ajustar a extensi'#243'n'
         OnClick = miViewFitClick
       end
+      object miViewIdentify: TMenuItem
+        AutoCheck = True
+        Caption = 'Identificar'
+        Checked = True
+      end
       object N2: TMenuItem
         Caption = '-'
       end
@@ -61,6 +66,13 @@ object MainForm: TMainForm
         AutoCheck = True
         Caption = 'Zoom por caja'
         OnClick = miViewRubberClick
+      end
+      object N3: TMenuItem
+        Caption = '-'
+      end
+      object miViewAttributes: TMenuItem
+        Caption = 'Atributos de la capa...'
+        OnClick = miViewAttributesClick
       end
     end
     object miHelp: TMenuItem
@@ -72,6 +84,7 @@ object MainForm: TMainForm
     end
   end
   object OpenDialog1: TOpenDialog
+    Options = [ofHideReadOnly, ofAllowMultiSelect, ofEnableSizing]
     Left = 216
     Top = 144
   end

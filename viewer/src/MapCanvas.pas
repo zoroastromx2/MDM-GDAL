@@ -5,6 +5,7 @@ interface
 uses
   System.Classes,
   System.Types,
+  System.Generics.Collections,
   Winapi.Windows,
   Vcl.Controls,
   Vcl.Graphics,
@@ -16,19 +17,24 @@ type
   TIdentifyEvent = procedure(Sender: TObject; ScreenX, ScreenY: Integer) of object;
 
   {
-    Control VCL que dibuja una TVectorLayer y gestiona la interaccion:
+    Control VCL que dibuja una lista de TVectorLayer y gestiona la interaccion:
     - rueda del raton  -> zoom anclado al cursor
     - arrastrar        -> pan
     - modo caja        -> arrastrar dibuja un rectangulo y hace zoom a esa region
-    - clic sin mover   -> evento OnIdentify (se resuelve en tareas 6/7)
+    - clic sin mover   -> evento OnIdentify (se resuelve en Main)
   }
   TMapCanvas = class(TCustomControl)
   private
     FView: TMapView;
-    FLayer: TVectorLayer;
-    FColor: TColor;
+    FLayers: TList<TVectorLayer>;
     FRubberBandMode: Boolean;
     FOnIdentify: TIdentifyEvent;
+
+    { estilo de la capa que se esta dibujando (se fija por capa antes de pintar) }
+    FCurFill: TColor;
+    FCurLine: TColor;
+    FCurFillEnabled: Boolean;
+    FCurLineWidth: Integer;
 
     FDown: Boolean;
     FPanning: Boolean;
@@ -59,14 +65,15 @@ type
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
 
-    procedure SetLayer(Value: TVectorLayer);
+    procedure SetLayers(Value: TList<TVectorLayer>);
     procedure ZoomIn;
     procedure ZoomOut;
     procedure ZoomToFit;
+    function IdentifyAt(ScreenX, ScreenY: Integer; TolerancePx: Double;
+      out LayerIndex: Integer; out FeatureIndex: Integer): Double;
 
     property View: TMapView read FView;
-    property Layer: TVectorLayer read FLayer;
-    property Color: TColor read FColor write FColor;
+    property Layers: TList<TVectorLayer> read FLayers;
     property RubberBandMode: Boolean read FRubberBandMode write FRubberBandMode;
     property OnIdentify: TIdentifyEvent read FOnIdentify write FOnIdentify;
 
@@ -82,8 +89,11 @@ constructor TMapCanvas.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
   FView := TMapView.Create;
-  FColor := clBlue;
   FRubberBandMode := False;
+  FCurFill := $00FF0000;   // azul (BGR)
+  FCurLine := $00FF0000;
+  FCurFillEnabled := True;
+  FCurLineWidth := 1;
   DoubleBuffered := True;
 end;
 
@@ -101,9 +111,9 @@ begin
   Invalidate;
 end;
 
-procedure TMapCanvas.SetLayer(Value: TVectorLayer);
+procedure TMapCanvas.SetLayers(Value: TList<TVectorLayer>);
 begin
-  FLayer := Value;
+  FLayers := Value;
   ZoomToFit;
 end;
 
@@ -126,15 +136,17 @@ var
 begin
   FView.WorldToScreen(P, x, y);
   r := 3;
-  Canvas.Brush.Color := FColor;
-  Canvas.Pen.Color := FColor;
+  Canvas.Brush.Color := FCurFill;
+  Canvas.Pen.Color := FCurLine;
+  Canvas.Pen.Width := FCurLineWidth;
   Canvas.Ellipse(Integer(Round(x)) - r, Integer(Round(y)) - r,
                  Integer(Round(x)) + r, Integer(Round(y)) + r);
 end;
 
 procedure TMapCanvas.DrawLine(const Pts: TPointArray);
 begin
-  Canvas.Pen.Color := FColor;
+  Canvas.Pen.Color := FCurLine;
+  Canvas.Pen.Width := FCurLineWidth;
   Canvas.Brush.Style := bsClear;
   Canvas.Polyline(WorldToScreenPts(Pts));
   Canvas.Brush.Style := bsSolid;
@@ -167,10 +179,14 @@ begin
     end;
   end;
 
-  Canvas.Brush.Color := FColor;
-  Canvas.Pen.Color := FColor;
+  Canvas.Brush.Color := FCurFill;
+  Canvas.Pen.Color := FCurLine;
+  Canvas.Pen.Width := FCurLineWidth;
+  if not FCurFillEnabled then
+    Canvas.Brush.Style := bsClear;
   if Length(allPts) > 0 then
     PolyPolygon(Canvas.Handle, allPts[0], counts[0], Length(counts));
+  Canvas.Brush.Style := bsSolid;
 end;
 
 procedure TMapCanvas.DrawGeometry(const G: TFeatureGeometry);
@@ -204,6 +220,7 @@ begin
   Canvas.Brush.Style := bsClear;
   Canvas.Pen.Style := psDash;
   Canvas.Pen.Color := clBlack;
+  Canvas.Pen.Width := 1;
   Canvas.Rectangle(r);
   Canvas.Pen.Style := psSolid;
   Canvas.Brush.Style := bsSolid;
@@ -211,7 +228,8 @@ end;
 
 procedure TMapCanvas.Paint;
 var
-  i: Integer;
+  li, i: Integer;
+  layer: TVectorLayer;
 begin
   inherited Paint;
   Canvas.Brush.Color := clWhite;
@@ -220,11 +238,20 @@ begin
   FView.ViewportW := ClientWidth;
   FView.ViewportH := ClientHeight;
 
-  if FLayer = nil then
+  if FLayers = nil then
     Exit;
 
-  for i := 0 to FLayer.FeatureCount - 1 do
-    DrawGeometry(FLayer.Features[i].Geometry);
+  for li := 0 to FLayers.Count - 1 do begin
+    layer := FLayers[li];
+    if not layer.Visible then
+      Continue;
+    FCurFill := layer.FillColor;
+    FCurLine := layer.LineColor;
+    FCurFillEnabled := layer.FillEnabled;
+    FCurLineWidth := layer.LineWidth;
+    for i := 0 to layer.FeatureCount - 1 do
+      DrawGeometry(layer.Features[i].Geometry);
+  end;
 
   DrawRubberBand;
 end;
@@ -306,7 +333,7 @@ var
   Factor: Double;
 begin
   Result := True;
-  if FLayer = nil then
+  if (FLayers = nil) or (FLayers.Count = 0) then
     Exit;
 
   P := ScreenToClient(MousePos);
@@ -347,12 +374,70 @@ begin
 end;
 
 procedure TMapCanvas.ZoomToFit;
+var
+  i: Integer;
+  E: TExtent;
+  found: Boolean;
 begin
-  if (FLayer <> nil) and (not FLayer.Extent.IsEmpty) then
-    FView.FitBounds(MakePoint(FLayer.Extent.MinX, FLayer.Extent.MinY),
-                    MakePoint(FLayer.Extent.MaxX, FLayer.Extent.MaxY),
+  ExtentReset(E);
+  found := False;
+
+  if FLayers <> nil then begin
+    for i := 0 to FLayers.Count - 1 do begin
+      if (not FLayers[i].Visible) or FLayers[i].Extent.IsEmpty then
+        Continue;
+      if not found then begin
+        E := FLayers[i].Extent;
+        found := True;
+      end
+      else begin
+        if FLayers[i].Extent.MinX < E.MinX then E.MinX := FLayers[i].Extent.MinX;
+        if FLayers[i].Extent.MinY < E.MinY then E.MinY := FLayers[i].Extent.MinY;
+        if FLayers[i].Extent.MaxX > E.MaxX then E.MaxX := FLayers[i].Extent.MaxX;
+        if FLayers[i].Extent.MaxY > E.MaxY then E.MaxY := FLayers[i].Extent.MaxY;
+      end;
+    end;
+  end;
+
+  if found then
+    FView.FitBounds(MakePoint(E.MinX, E.MinY), MakePoint(E.MaxX, E.MaxY),
                     ClientWidth, ClientHeight);
   Invalidate;
+end;
+
+function TMapCanvas.IdentifyAt(ScreenX, ScreenY: Integer; TolerancePx: Double;
+  out LayerIndex: Integer; out FeatureIndex: Integer): Double;
+var
+  w: TPointD;
+  tol: Double;
+  i, idx: Integer;
+  d: Double;
+begin
+  LayerIndex := -1;
+  FeatureIndex := -1;
+  Result := 1e300;
+
+  if (FLayers = nil) or (FLayers.Count = 0) then
+    Exit;
+
+  w := FView.ScreenToWorld(ScreenX, ScreenY);
+  tol := TolerancePx / FView.Scale;
+
+  for i := 0 to FLayers.Count - 1 do begin
+    if not FLayers[i].Visible then
+      Continue;
+    d := FindNearestFeature(FLayers[i].Features, w, idx);
+    if (idx >= 0) and (d < Result) then begin
+      Result := d;
+      LayerIndex := i;
+      FeatureIndex := idx;
+    end;
+  end;
+
+  if Result > tol then begin
+    LayerIndex := -1;
+    FeatureIndex := -1;
+  end;
 end;
 
 end.
