@@ -71,6 +71,8 @@ type
     procedure ZoomToFit;
     function IdentifyAt(ScreenX, ScreenY: Integer; TolerancePx: Double;
       out LayerIndex: Integer; out FeatureIndex: Integer): Double;
+    function IdentifyAtLayer(ScreenX, ScreenY: Integer; TolerancePx: Double;
+      LayerIndex: Integer; out FeatureIndex: Integer): Double;
 
     property View: TMapView read FView;
     property Layers: TList<TVectorLayer> read FLayers;
@@ -438,6 +440,29 @@ begin
     LayerIndex := -1;
     FeatureIndex := -1;
   end;
+end;
+
+function TMapCanvas.IdentifyAtLayer(ScreenX, ScreenY: Integer; TolerancePx: Double;
+  LayerIndex: Integer; out FeatureIndex: Integer): Double;
+var
+  w: TPointD;
+  tol: Double;
+  idx: Integer;
+begin
+  FeatureIndex := -1;
+  Result := 1e300;
+
+  if (FLayers = nil) or (LayerIndex < 0) or (LayerIndex >= FLayers.Count) then
+    Exit;
+  if not FLayers[LayerIndex].Visible then
+    Exit;
+
+  w := FView.ScreenToWorld(ScreenX, ScreenY);
+  tol := TolerancePx / FView.Scale;
+
+  Result := FindNearestFeature(FLayers[LayerIndex].Features, w, idx);
+  if (idx >= 0) and (Result <= tol) then
+    FeatureIndex := idx;
 end;
 
 end.

@@ -450,14 +450,27 @@ end;
 
 procedure TMainForm.CanvasIdentify(Sender: TObject; ScreenX, ScreenY: Integer);
 var
-  li, fi: Integer;
+  li, fi, idx: Integer;
 begin
   if not miViewIdentify.Checked then
     Exit;
-  FCanvas.IdentifyAt(ScreenX, ScreenY, 5, li, fi);
-  if (li >= 0) and (fi >= 0) then begin
-    FIdentify.ShowFeature(FLayers[li], fi);
-    FIdentify.Show;
+
+  idx := SelectedLayerIndex;
+  if idx >= 0 then begin
+    { Identificar solo la capa seleccionada en el arbol. }
+    FCanvas.IdentifyAtLayer(ScreenX, ScreenY, 5, idx, fi);
+    if fi >= 0 then begin
+      FIdentify.ShowFeature(FLayers[idx], fi);
+      FIdentify.Show;
+    end;
+  end
+  else begin
+    { Sin capa seleccionada: buscar en todas las capas visibles. }
+    FCanvas.IdentifyAt(ScreenX, ScreenY, 5, li, fi);
+    if (li >= 0) and (fi >= 0) then begin
+      FIdentify.ShowFeature(FLayers[li], fi);
+      FIdentify.Show;
+    end;
   end;
 end;
 
