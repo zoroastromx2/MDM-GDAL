@@ -75,6 +75,21 @@
         OnClick = miViewAttributesClick
       end
     end
+    object miAnalysis: TMenuItem
+      Caption = 'An'#225'lisis'
+      object miAnalysisBuffer: TMenuItem
+        Caption = 'Buffer...'
+        OnClick = miAnalysisBufferClick
+      end
+      object miAnalysisIntersection: TMenuItem
+        Caption = 'Intersecci'#243'n...'
+        OnClick = miAnalysisIntersectionClick
+      end
+      object miAnalysisUnion: TMenuItem
+        Caption = 'Uni'#243'n...'
+        OnClick = miAnalysisUnionClick
+      end
+    end
     object miHelp: TMenuItem
       Caption = 'Ayuda'
       object miHelpAbout: TMenuItem

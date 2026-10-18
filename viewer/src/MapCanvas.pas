@@ -428,17 +428,15 @@ begin
   for i := 0 to FLayers.Count - 1 do begin
     if not FLayers[i].Visible then
       Continue;
-    d := FindNearestFeature(FLayers[i].Features, w, idx);
-    if (idx >= 0) and (d < Result) then begin
-      Result := d;
-      LayerIndex := i;
-      FeatureIndex := idx;
+    idx := FLayers[i].IdentifyAtWorld(w, tol);
+    if idx >= 0 then begin
+      d := DistanceToGeometry(w, FLayers[i].Features[idx].Geometry);
+      if d < Result then begin
+        Result := d;
+        LayerIndex := i;
+        FeatureIndex := idx;
+      end;
     end;
-  end;
-
-  if Result > tol then begin
-    LayerIndex := -1;
-    FeatureIndex := -1;
   end;
 end;
 
@@ -460,9 +458,11 @@ begin
   w := FView.ScreenToWorld(ScreenX, ScreenY);
   tol := TolerancePx / FView.Scale;
 
-  Result := FindNearestFeature(FLayers[LayerIndex].Features, w, idx);
-  if (idx >= 0) and (Result <= tol) then
+  idx := FLayers[LayerIndex].IdentifyAtWorld(w, tol);
+  if idx >= 0 then begin
+    Result := DistanceToGeometry(w, FLayers[LayerIndex].Features[idx].Geometry);
     FeatureIndex := idx;
+  end;
 end;
 
 end.

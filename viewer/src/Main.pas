@@ -21,7 +21,8 @@ uses
   MapCanvas,
   IdentifyForm,
   LayerStyleForm,
-  AttributesForm;
+  AttributesForm,
+  AnalysisForm;
 
 const
   { Paleta de colores por defecto para distinguir capas (TColor = $00BBGGRR). }
@@ -51,6 +52,10 @@ type
     miViewIdentify: TMenuItem;
     miViewRubber: TMenuItem;
     miViewAttributes: TMenuItem;
+    miAnalysis: TMenuItem;
+    miAnalysisBuffer: TMenuItem;
+    miAnalysisIntersection: TMenuItem;
+    miAnalysisUnion: TMenuItem;
     miHelp: TMenuItem;
     miHelpAbout: TMenuItem;
     StatusBar1: TStatusBar;
@@ -64,6 +69,9 @@ type
     procedure miViewFitClick(Sender: TObject);
     procedure miViewRubberClick(Sender: TObject);
     procedure miViewAttributesClick(Sender: TObject);
+    procedure miAnalysisBufferClick(Sender: TObject);
+    procedure miAnalysisIntersectionClick(Sender: TObject);
+    procedure miAnalysisUnionClick(Sender: TObject);
     procedure miHelpAboutClick(Sender: TObject);
   private
     FCanvas: TMapCanvas;
@@ -71,6 +79,7 @@ type
     FIdentify: TIdentifyForm;
     FStyleForm: TLayerStyleForm;
     FAttributes: TAttributesForm;
+    FAnalysis: TAnalysisForm;
     FTree: TTreeView;
     FPopup: TPopupMenu;
     FVersion: string;
@@ -90,6 +99,8 @@ type
     procedure UpdateStatus;
     procedure LoadProgress(const LayerName: string; Current, Total: Integer);
     procedure OpenFile(const FileName: string);
+    procedure RunAnalysis(Op: TAnalysisOp);
+    procedure AddResultLayers(const FileName: string);
     procedure RebuildTree;
     function NodeLayerIndex(node: TTreeNode): Integer;
     function SelectedLayerIndex: Integer;
@@ -115,6 +126,7 @@ begin
   FIdentify := TIdentifyForm.Create(Self);
   FStyleForm := TLayerStyleForm.Create(Self);
   FAttributes := TAttributesForm.Create(Self);
+  FAnalysis := TAnalysisForm.Create(Self);
   FNextColor := 0;
 
   { panel izquierdo con el arbol de capas }
@@ -523,6 +535,38 @@ end;
 procedure TMainForm.miViewAttributesClick(Sender: TObject);
 begin
   ShowSelectedLayerAttributes;
+end;
+
+procedure TMainForm.miAnalysisBufferClick(Sender: TObject);
+begin
+  RunAnalysis(aoBuffer);
+end;
+
+procedure TMainForm.miAnalysisIntersectionClick(Sender: TObject);
+begin
+  RunAnalysis(aoIntersection);
+end;
+
+procedure TMainForm.miAnalysisUnionClick(Sender: TObject);
+begin
+  RunAnalysis(aoUnion);
+end;
+
+procedure TMainForm.RunAnalysis(Op: TAnalysisOp);
+var
+  outFile: string;
+begin
+  if FLayers.Count = 0 then begin
+    ShowMessage('No hay capas cargadas.');
+    Exit;
+  end;
+  if FAnalysis.Execute(FLayers, Op, outFile) then
+    AddResultLayers(outFile);
+end;
+
+procedure TMainForm.AddResultLayers(const FileName: string);
+begin
+  OpenFile(FileName);
 end;
 
 procedure TMainForm.miHelpAboutClick(Sender: TObject);

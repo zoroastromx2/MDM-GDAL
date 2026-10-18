@@ -1,0 +1,13 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "name": "B" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[[5, 5], [15, 5], [15, 15], [5, 15], [5, 5]]]
+      }
+    }
+  ]
+}
