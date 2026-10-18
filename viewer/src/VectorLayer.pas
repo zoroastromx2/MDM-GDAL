@@ -73,8 +73,8 @@ begin
   inherited Create;
   FVisible := True;
   FFillEnabled := True;
-  FFillColor := $00FF0000;   // azul (BGR)
-  FLineColor := $00FF0000;   // azul
+  FFillColor := $FAEA8F00;   // azul (BGR)
+  FLineColor := $F4D10B00;   // azul #
   FLineWidth := 1;
   ExtentReset(FExtent);
 end;
