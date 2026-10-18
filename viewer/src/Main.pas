@@ -405,9 +405,13 @@ var
   Layers: TArray<TVectorLayer>;
   i: Integer;
   c: TColor;
+  wasEmpty: Boolean;
 begin
   miFile.Enabled := False;
   miView.Enabled := False;
+  { Solo se encuadra si el mapa estaba vacio; al agregar sobre un mapa con
+    capas se conserva el zoom/vista actual. }
+  wasEmpty := FLayers.Count = 0;
   try
     try
       Layers := TVectorLayer.LoadLayers(FileName, LoadProgress);
@@ -419,7 +423,10 @@ begin
         FLayers.Add(Layers[i]);
       end;
       RebuildTree;
-      FCanvas.ZoomToFit;
+      if wasEmpty then
+        FCanvas.ZoomToFit
+      else
+        FCanvas.Invalidate;
       UpdateStatus;
     except
       on E: Exception do
