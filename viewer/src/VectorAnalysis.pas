@@ -15,8 +15,8 @@ type
     Ejecuta análisis vectoriales en proceso (el motor SQL que usa ogr2ogr
     -dialect SQLITE) y escribe el resultado en un GeoPackage nuevo.
     Primera iteración: Buffer (1 capa), Intersección (2 capas) y Unión (2 capas,
-    combinando entidades). Las operaciones de 2 capas requieren que ambas estén
-    en el mismo datasource.
+    combinando entidades). Funciona aunque las capas vengan de archivos
+    (datasources) distintos: la intersección copia ambas a un GPKG temporal.
   }
   TVectorAnalysis = class
   private
@@ -107,18 +107,65 @@ end;
 class function TVectorAnalysis.Intersection(const LayerA, LayerB: TVectorLayer;
   const OutFile, OutLayerName: string): Boolean;
 var
+  tempPath: string;
+  tempUtf8, nameUtf8, sqlUtf8: UTF8String;
+  drv: OGRSFDriverH;
+  tempDs, dst: OGRDataSourceH;
+  la, lb, res, copied: OGRLayerH;
   ga, gb, sql: string;
 begin
   if (LayerA = nil) or (LayerB = nil) then
     raise EAnalysisError.Create('Se requieren dos capas para la intersección.');
-  if LayerA.DataSource <> LayerB.DataSource then
-    raise EAnalysisError.Create('La intersección requiere capas del mismo archivo.');
 
-  ga := GeomColumn(LayerA.OgrLayer);
-  gb := GeomColumn(LayerB.OgrLayer);
-  sql := Format('SELECT ST_Intersection(a.%s, b.%s) AS %s, a.* FROM "%s" a, "%s" b WHERE ST_Intersects(a.%s, b.%s)',
-    [ga, gb, ga, LayerA.LayerName, LayerB.LayerName, ga, gb]);
-  Result := RunSql(LayerA.DataSource, sql, OutFile, OutLayerName);
+  { Copiar ambas capas a un GeoPackage temporal para poder hacer el join SQL
+    aunque provengan de archivos (datasources) distintos. }
+  tempPath := IncludeTrailingPathDelimiter(GetEnvironmentVariable('TEMP')) +
+    'mdm_overlay_' + FormatDateTime('yyyymmddhhnnsszzz', Now) + '.gpkg';
+  if FileExists(tempPath) then
+    DeleteFile(tempPath);
+
+  drv := OGRGetDriverByName(PAnsiChar(AnsiString('GPKG')));
+  if drv = nil then
+    raise EAnalysisError.Create('No se encontró el driver GPKG.');
+  tempUtf8 := UTF8String(tempPath);
+  tempDs := OGR_Dr_CreateDataSource(drv, PAnsiChar(tempUtf8), nil);
+  if tempDs = nil then
+    raise EAnalysisError.Create('No se pudo crear el archivo temporal.');
+
+  try
+    la := OGR_DS_CopyLayer(tempDs, LayerA.OgrLayer, PAnsiChar(AnsiString('a')), nil);
+    lb := OGR_DS_CopyLayer(tempDs, LayerB.OgrLayer, PAnsiChar(AnsiString('b')), nil);
+    if (la = nil) or (lb = nil) then
+      raise EAnalysisError.Create('No se pudieron copiar las capas al temporal.');
+
+    ga := GeomColumn(la);
+    gb := GeomColumn(lb);
+    sql := Format('SELECT ST_Intersection(a.%s, b.%s) AS %s, a.* FROM "a" a, "b" b WHERE ST_Intersects(a.%s, b.%s)',
+      [ga, gb, ga, ga, gb]);
+
+    sqlUtf8 := UTF8String(sql);
+    res := OGR_DS_ExecuteSQL(tempDs, PAnsiChar(sqlUtf8), nil, PAnsiChar(AnsiString('SQLITE')));
+    if res = nil then
+      raise EAnalysisError.Create('La intersección no produjo resultado.');
+
+    try
+      dst := CreateResultDataSource(OutFile);
+      try
+        nameUtf8 := UTF8String(OutLayerName);
+        copied := OGR_DS_CopyLayer(dst, res, PAnsiChar(nameUtf8), nil);
+        if copied = nil then
+          raise EAnalysisError.Create('No se pudo copiar el resultado.');
+        Result := True;
+      finally
+        OGRReleaseDataSource(dst);
+      end;
+    finally
+      OGR_DS_ReleaseResultSet(tempDs, res);
+    end;
+  finally
+    OGRReleaseDataSource(tempDs);
+    DeleteFile(tempPath);
+  end;
 end;
 
 class function TVectorAnalysis.Union(const LayerA, LayerB: TVectorLayer;
@@ -131,8 +178,6 @@ var
 begin
   if (LayerA = nil) or (LayerB = nil) then
     raise EAnalysisError.Create('Se requieren dos capas para la unión.');
-  if LayerA.DataSource <> LayerB.DataSource then
-    raise EAnalysisError.Create('La unión requiere capas del mismo archivo.');
 
   dst := CreateResultDataSource(OutFile);
   try

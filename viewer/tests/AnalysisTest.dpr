@@ -15,62 +15,107 @@ begin
   Result := ExtractFilePath(ParamStr(0)) + '..\data\';
 end;
 
+procedure CheckLayers(const Layers: TArray<TVectorLayer>; ExpectedCount: Integer;
+  const Msg: string);
+begin
+  if Length(Layers) <> ExpectedCount then begin
+    WriteLn('FAIL: ', Msg, ' (capas=', Length(Layers), ', esperadas=', ExpectedCount, ')');
+    Halt(1);
+  end;
+end;
+
+procedure FreeLayers(const Layers: TArray<TVectorLayer>);
 var
-  Layers, Res: TArray<TVectorLayer>;
   i: Integer;
-  outBuf, outInter, outUnion: string;
+begin
+  for i := 0 to High(Layers) do
+    Layers[i].Free;
+end;
+
+var
+  Layers, Res, LA, LB: TArray<TVectorLayer>;
+  outBuf, outInter, outUnion, outXInter, outXUnion: string;
 begin
   OGRRegisterAll;
   outBuf := DataDir + 'tmp_buffer.gpkg';
   outInter := DataDir + 'tmp_inter.gpkg';
   outUnion := DataDir + 'tmp_union.gpkg';
+  outXInter := DataDir + 'tmp_xinter.gpkg';
+  outXUnion := DataDir + 'tmp_xunion.gpkg';
   DeleteFile(outBuf);
   DeleteFile(outInter);
   DeleteFile(outUnion);
+  DeleteFile(outXInter);
+  DeleteFile(outXUnion);
 
+  { --- mismo archivo: analysis_sample.gpkg (capa_a y capa_b) --- }
   Layers := TVectorLayer.LoadLayers(DataDir + 'analysis_sample.gpkg');
-  if Length(Layers) <> 2 then begin
-    WriteLn('FAIL: se esperaban 2 capas, hay ', Length(Layers));
-    Halt(1);
-  end;
+  CheckLayers(Layers, 2, 'analysis_sample.gpkg');
 
-  { buffer: capa_a (0,0)-(10,10) con distancia 2 -> aprox (-2,-2)-(12,12) }
   if not TVectorAnalysis.Buffer(Layers[0], 2.0, outBuf, 'buf') then begin
     WriteLn('FAIL: buffer'); Halt(1);
   end;
   Res := TVectorLayer.LoadLayers(outBuf);
-  if Length(Res) <> 1 then begin WriteLn('FAIL: buffer no produjo 1 capa'); Halt(1); end;
-  if Res[0].FeatureCount <> 1 then begin WriteLn('FAIL: buffer no produjo 1 entidad'); Halt(1); end;
+  CheckLayers(Res, 1, 'buffer');
+  if Res[0].FeatureCount <> 1 then begin WriteLn('FAIL: buffer entidades'); Halt(1); end;
   WriteLn(Format('Buffer OK: extent=(%.2f,%.2f)-(%.2f,%.2f)',
     [Res[0].Extent.MinX, Res[0].Extent.MinY, Res[0].Extent.MaxX, Res[0].Extent.MaxY]));
-  for i := 0 to High(Res) do Res[i].Free;
+  FreeLayers(Res);
 
-  { interseccion: capa_a ∩ capa_b -> (5,5)-(10,10) }
   if not TVectorAnalysis.Intersection(Layers[0], Layers[1], outInter, 'inter') then begin
-    WriteLn('FAIL: interseccion'); Halt(1);
+    WriteLn('FAIL: interseccion mismo archivo'); Halt(1);
   end;
   Res := TVectorLayer.LoadLayers(outInter);
-  if Length(Res) <> 1 then begin WriteLn('FAIL: interseccion no produjo 1 capa'); Halt(1); end;
-  if Res[0].FeatureCount <> 1 then begin WriteLn('FAIL: interseccion no produjo 1 entidad'); Halt(1); end;
-  WriteLn(Format('Interseccion OK: extent=(%.2f,%.2f)-(%.2f,%.2f)',
+  CheckLayers(Res, 1, 'interseccion mismo archivo');
+  if Res[0].FeatureCount <> 1 then begin WriteLn('FAIL: interseccion entidades'); Halt(1); end;
+  WriteLn(Format('Interseccion (mismo archivo) OK: extent=(%.2f,%.2f)-(%.2f,%.2f)',
     [Res[0].Extent.MinX, Res[0].Extent.MinY, Res[0].Extent.MaxX, Res[0].Extent.MaxY]));
-  for i := 0 to High(Res) do Res[i].Free;
+  FreeLayers(Res);
 
-  { union: capa_a + capa_b -> 2 entidades }
   if not TVectorAnalysis.Union(Layers[0], Layers[1], outUnion, 'union') then begin
-    WriteLn('FAIL: union'); Halt(1);
+    WriteLn('FAIL: union mismo archivo'); Halt(1);
   end;
   Res := TVectorLayer.LoadLayers(outUnion);
-  if Length(Res) <> 1 then begin WriteLn('FAIL: union no produjo 1 capa'); Halt(1); end;
-  if Res[0].FeatureCount <> 2 then begin WriteLn('FAIL: union no produjo 2 entidades, hay ', Res[0].FeatureCount); Halt(1); end;
-  WriteLn('Union OK: 2 entidades');
-  for i := 0 to High(Res) do Res[i].Free;
+  CheckLayers(Res, 1, 'union mismo archivo');
+  if Res[0].FeatureCount <> 2 then begin WriteLn('FAIL: union entidades'); Halt(1); end;
+  WriteLn('Union (mismo archivo) OK: 2 entidades');
+  FreeLayers(Res);
 
-  for i := 0 to High(Layers) do Layers[i].Free;
+  FreeLayers(Layers);
+
+  { --- archivos distintos: analysis_a.geojson y analysis_b.geojson --- }
+  LA := TVectorLayer.LoadLayers(DataDir + 'analysis_a.geojson');
+  LB := TVectorLayer.LoadLayers(DataDir + 'analysis_b.geojson');
+  CheckLayers(LA, 1, 'analysis_a.geojson');
+  CheckLayers(LB, 1, 'analysis_b.geojson');
+
+  if not TVectorAnalysis.Union(LA[0], LB[0], outXUnion, 'ux') then begin
+    WriteLn('FAIL: union entre archivos'); Halt(1);
+  end;
+  Res := TVectorLayer.LoadLayers(outXUnion);
+  CheckLayers(Res, 1, 'union entre archivos');
+  if Res[0].FeatureCount <> 2 then begin WriteLn('FAIL: union entre archivos entidades'); Halt(1); end;
+  WriteLn('Union (archivos distintos) OK: 2 entidades');
+  FreeLayers(Res);
+
+  if not TVectorAnalysis.Intersection(LA[0], LB[0], outXInter, 'ix') then begin
+    WriteLn('FAIL: interseccion entre archivos'); Halt(1);
+  end;
+  Res := TVectorLayer.LoadLayers(outXInter);
+  CheckLayers(Res, 1, 'interseccion entre archivos');
+  if Res[0].FeatureCount <> 1 then begin WriteLn('FAIL: interseccion entre archivos entidades'); Halt(1); end;
+  WriteLn(Format('Interseccion (archivos distintos) OK: extent=(%.2f,%.2f)-(%.2f,%.2f)',
+    [Res[0].Extent.MinX, Res[0].Extent.MinY, Res[0].Extent.MaxX, Res[0].Extent.MaxY]));
+  FreeLayers(Res);
+
+  FreeLayers(LA);
+  FreeLayers(LB);
 
   DeleteFile(outBuf);
   DeleteFile(outInter);
   DeleteFile(outUnion);
+  DeleteFile(outXInter);
+  DeleteFile(outXUnion);
 
   WriteLn('ANALYSIS OK');
 end.
