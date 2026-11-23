@@ -5,3 +5,6 @@ tasks
 dcu64
 /viewer/tests/dcu
 /viewer/tests/bin64
+
+# datos de prueba generados (análisis/exportaciones)
+*.gpkg

@@ -4,11 +4,11 @@ interface
 
 uses
   SysUtils,
-  System.Generics.Collections,
   System.UITypes,
   gdalcore,
   ogr,
-  GeometryModel;
+  GeometryModel,
+  SpatialIndex;
 
 type
   EVectorLayerError = class(Exception);
@@ -56,7 +56,8 @@ type
     FLineWidth: Integer;
     FOwner: TDataSourceOwner;
     FLayer: OGRLayerH;
-    FFidToIndex: TDictionary<Int64, Integer>;
+    FSpatialIndex: TSpatialIndex;
+    FHasGeometry: Boolean;
     procedure ExtractRing(geom: OGRGeometryH; var Ring: TPointArray);
     function GeometryToModel(geom: OGRGeometryH): TFeatureGeometry;
     procedure ExtractLayer(layer: OGRLayerH);
@@ -83,6 +84,7 @@ type
     property Extent: TExtent read FExtent;
     property FieldCount: Integer read FFieldCount;
     property FieldNames: TStringArray read FFieldNames;
+    property HasGeometry: Boolean read FHasGeometry;
     property Visible: Boolean read FVisible write FVisible;
     property FillEnabled: Boolean read FFillEnabled write FFillEnabled;
     property FillColor: TColor read FFillColor write FFillColor;
@@ -129,12 +131,13 @@ begin
   FFillColor := $FAEA8F00;   // azul (BGR)
   FLineColor := $F4D10B00;   // azul #
   FLineWidth := 1;
+  FSpatialIndex := TSpatialIndex.Create;
   ExtentReset(FExtent);
 end;
 
 destructor TVectorLayer.Destroy;
 begin
-  FFidToIndex.Free;
+  FSpatialIndex.Free;
   if FOwner <> nil then
     FOwner.Release;
   inherited Destroy;
@@ -142,8 +145,6 @@ end;
 
 procedure TVectorLayer.Clear;
 begin
-  FFidToIndex.Free;
-  FFidToIndex := nil;
   if FOwner <> nil then
     FOwner.Release;
   FOwner := nil;
@@ -154,6 +155,7 @@ begin
   FFieldCount := 0;
   FFieldNames := nil;
   FLayerIndex := 0;
+  FHasGeometry := False;
   ExtentReset(FExtent);
 end;
 
@@ -255,8 +257,11 @@ var
   fldDefn: OGRFieldDefnH;
   fieldCount, i, n, count: Integer;
   featRec: TFeature;
+  entries: array of TIndexEntry;
+  featExt: TExtent;
 begin
   featDefn := OGR_L_GetLayerDefn(layer);
+  FHasGeometry := OGR_FD_GetGeomType(featDefn) <> wkbNone;
   fieldCount := OGR_FD_GetFieldCount(featDefn);
   FFieldCount := fieldCount;
   FLayerName := UTF8ToString(OGR_L_GetName(layer));
@@ -271,27 +276,41 @@ begin
   if count < 0 then
     count := 0;
   SetLength(FFeatures, count);
+  SetLength(entries, count);
   n := 0;
-
-  if FFidToIndex = nil then
-    FFidToIndex := TDictionary<Int64, Integer>.Create
-  else
-    FFidToIndex.Clear;
 
   ExtentReset(FExtent);
 
   OGR_L_ResetReading(layer);
   feat := OGR_L_GetNextFeature(layer);
   while feat <> nil do begin
-    if n >= Length(FFeatures) then
+    if n >= Length(FFeatures) then begin
       SetLength(FFeatures, n + 1024);
+      SetLength(entries, n + 1024);
+    end;
 
     featRec.FID := OGR_F_GetFID(feat);
     featRec.Geometry := GeometryToModel(OGR_F_GetGeometryRef(feat));
-    GeometryExtent(featRec.Geometry, FExtent);
+
+    { bbox por entidad (una sola travesía) + extensión de la capa }
+    ExtentReset(featExt);
+    GeometryExtent(featRec.Geometry, featExt);
+    if not featExt.IsEmpty then begin
+      if FExtent.IsEmpty then
+        FExtent := featExt
+      else begin
+        if featExt.MinX < FExtent.MinX then FExtent.MinX := featExt.MinX;
+        if featExt.MinY < FExtent.MinY then FExtent.MinY := featExt.MinY;
+        if featExt.MaxX > FExtent.MaxX then FExtent.MaxX := featExt.MaxX;
+        if featExt.MaxY > FExtent.MaxY then FExtent.MaxY := featExt.MaxY;
+      end;
+      entries[n].Box := MakeBox(featExt.MinX, featExt.MinY, featExt.MaxX, featExt.MaxY);
+    end
+    else
+      entries[n].Box := MakeBox(0, 0, 0, 0);
+    entries[n].Index := n;
 
     FFeatures[n] := featRec;
-    FFidToIndex.AddOrSetValue(featRec.FID, n);
     Inc(n);
 
     if Assigned(FProgress) and ((n mod 5000) = 0) then
@@ -301,6 +320,9 @@ begin
     feat := OGR_L_GetNextFeature(layer);
   end;
   SetLength(FFeatures, n);
+  SetLength(entries, n);
+
+  FSpatialIndex.Build(entries);
 
   if Assigned(FProgress) then begin
     if count > 0 then
@@ -464,35 +486,26 @@ end;
 
 function TVectorLayer.IdentifyAtWorld(const P: TPointD; Tolerance: Double): Integer;
 var
-  feat: OGRFeatureH;
-  fid: Int64;
-  idx: Integer;
+  box: TBBox;
+  candidates: TArray<Integer>;
+  i, idx: Integer;
   d, bestD: Double;
 begin
   Result := -1;
-  if (FLayer = nil) or (FFidToIndex = nil) then
+  if (FSpatialIndex = nil) or (Length(FFeatures) = 0) then
     Exit;
 
+  box := MakeBox(P.X - Tolerance, P.Y - Tolerance, P.X + Tolerance, P.Y + Tolerance);
+  candidates := FSpatialIndex.Query(box);
+
   bestD := Tolerance;
-  OGR_L_SetSpatialFilterRect(FLayer, P.X - Tolerance, P.Y - Tolerance,
-                             P.X + Tolerance, P.Y + Tolerance);
-  try
-    OGR_L_ResetReading(FLayer);
-    feat := OGR_L_GetNextFeature(FLayer);
-    while feat <> nil do begin
-      fid := OGR_F_GetFID(feat);
-      if FFidToIndex.TryGetValue(fid, idx) then begin
-        d := DistanceToGeometry(P, FFeatures[idx].Geometry);
-        if d <= bestD then begin
-          bestD := d;
-          Result := idx;
-        end;
-      end;
-      OGR_F_Destroy(feat);
-      feat := OGR_L_GetNextFeature(FLayer);
+  for i := 0 to High(candidates) do begin
+    idx := candidates[i];
+    d := DistanceToGeometry(P, FFeatures[idx].Geometry);
+    if d <= bestD then begin
+      bestD := d;
+      Result := idx;
     end;
-  finally
-    OGR_L_SetSpatialFilter(FLayer, nil);
   end;
 end;
 

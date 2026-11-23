@@ -32,6 +32,10 @@
         Caption = 'Abrir...'
         OnClick = miFileOpenClick
       end
+      object miFileSaveAs: TMenuItem
+        Caption = 'Guardar como...'
+        OnClick = miFileSaveAsClick
+      end
       object N1: TMenuItem
         Caption = '-'
       end

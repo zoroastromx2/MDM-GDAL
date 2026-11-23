@@ -22,7 +22,8 @@ uses
   IdentifyForm,
   LayerStyleForm,
   AttributesForm,
-  AnalysisForm;
+  AnalysisForm,
+  VectorAnalysis;
 
 const
   { Paleta de colores por defecto para distinguir capas (TColor = $00BBGGRR). }
@@ -44,6 +45,7 @@ type
     MainMenu1: TMainMenu;
     miFile: TMenuItem;
     miFileOpen: TMenuItem;
+    miFileSaveAs: TMenuItem;
     miFileExit: TMenuItem;
     miView: TMenuItem;
     miViewZoomIn: TMenuItem;
@@ -63,6 +65,7 @@ type
     procedure FormCreate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure miFileOpenClick(Sender: TObject);
+    procedure miFileSaveAsClick(Sender: TObject);
     procedure miFileExitClick(Sender: TObject);
     procedure miViewZoomInClick(Sender: TObject);
     procedure miViewZoomOutClick(Sender: TObject);
@@ -80,6 +83,7 @@ type
     FStyleForm: TLayerStyleForm;
     FAttributes: TAttributesForm;
     FAnalysis: TAnalysisForm;
+    FSaveDialog: TSaveDialog;
     FTree: TTreeView;
     FPopup: TPopupMenu;
     FVersion: string;
@@ -127,6 +131,9 @@ begin
   FStyleForm := TLayerStyleForm.Create(Self);
   FAttributes := TAttributesForm.Create(Self);
   FAnalysis := TAnalysisForm.Create(Self);
+  FSaveDialog := TSaveDialog.Create(Self);
+  FSaveDialog.Filter := 'GeoParquet|*.parquet';
+  FSaveDialog.DefaultExt := 'parquet';
   FNextColor := 0;
 
   { panel izquierdo con el arbol de capas }
@@ -179,7 +186,7 @@ begin
   FCanvas.SetLayers(FLayers);
 
   OpenDialog1.Filter :=
-    'Archivos vectoriales|*.shp;*.geojson;*.json;*.kml;*.kmz;*.gpkg;*.tab;*.mif;*.gml|' +
+    'Archivos vectoriales|*.shp;*.geojson;*.json;*.kml;*.kmz;*.gpkg;*.tab;*.mif;*.gml;*.parquet|' +
     'Todos los archivos|*.*';
   OpenDialog1.Options := OpenDialog1.Options + [ofAllowMultiSelect];
 
@@ -418,6 +425,7 @@ var
   i: Integer;
   c: TColor;
   wasEmpty: Boolean;
+  noGeo: Boolean;
 begin
   miFile.Enabled := False;
   miView.Enabled := False;
@@ -427,6 +435,12 @@ begin
   try
     try
       Layers := TVectorLayer.LoadLayers(FileName, LoadProgress);
+      noGeo := False;
+      for i := 0 to High(Layers) do
+        if not Layers[i].HasGeometry then begin
+          noGeo := True;
+          Break;
+        end;
       for i := 0 to High(Layers) do begin
         c := LayerPalette[FNextColor mod Length(LayerPalette)];
         Layers[i].FillColor := c;
@@ -440,6 +454,11 @@ begin
       else
         FCanvas.Invalidate;
       UpdateStatus;
+      if noGeo then
+        ShowMessage('Sin columna de geometría' + sLineBreak +
+          'El archivo "' + ExtractFileName(FileName) +
+          '" no contiene una columna de geometría (Parquet plano).' + sLineBreak +
+          'Se cargaron los atributos, pero no hay geometrías para dibujar.');
     except
       on E: Exception do
         ShowMessage('Error al abrir el archivo:' + sLineBreak + E.Message);
@@ -510,6 +529,27 @@ end;
 procedure TMainForm.miFileExitClick(Sender: TObject);
 begin
   Close;
+end;
+
+procedure TMainForm.miFileSaveAsClick(Sender: TObject);
+var
+  idx: Integer;
+begin
+  idx := SelectedLayerIndex;
+  if idx < 0 then begin
+    ShowMessage('Selecciona una capa en el árbol para guardarla.');
+    Exit;
+  end;
+  FSaveDialog.FileName := FLayers[idx].LayerName + '.parquet';
+  if not FSaveDialog.Execute then
+    Exit;
+  try
+    TVectorAnalysis.ExportToParquet(FLayers[idx], FSaveDialog.FileName);
+    ShowMessage('Capa guardada como Parquet:' + sLineBreak + FSaveDialog.FileName);
+  except
+    on E: Exception do
+      ShowMessage('Error al guardar:' + sLineBreak + E.Message);
+  end;
 end;
 
 procedure TMainForm.miViewZoomInClick(Sender: TObject);

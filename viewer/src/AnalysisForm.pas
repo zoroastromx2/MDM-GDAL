@@ -29,6 +29,7 @@ type
     FComboB: TComboBox;
     FEditDist: TEdit;
     FEditOut: TEdit;
+    FFormat: TComboBox;
     procedure SaveClick(Sender: TObject);
     function SelectedLayer(Combo: TComboBox): TVectorLayer;
     procedure Run;
@@ -48,7 +49,7 @@ begin
   inherited CreateNew(AOwner);
   Caption := 'Análisis vectorial';
   Width := 400;
-  Height := 300;
+  Height := 320;
   Position := poOwnerFormCenter;
   BorderStyle := bsDialog;
 
@@ -98,16 +99,29 @@ begin
   btn.Caption := '...';
   btn.OnClick := SaveClick;
 
+  lbl := TLabel.Create(Self);
+  lbl.Parent := Self;
+  lbl.SetBounds(20, 148, 120, 20);
+  lbl.Caption := 'Formato:';
+
+  FFormat := TComboBox.Create(Self);
+  FFormat.Parent := Self;
+  FFormat.SetBounds(140, 146, 170, 22);
+  FFormat.Style := csDropDownList;
+  FFormat.Items.Add('GeoPackage');
+  FFormat.Items.Add('GeoParquet');
+  FFormat.ItemIndex := 0;
+
   btn := TButton.Create(Self);
   btn.Parent := Self;
-  btn.SetBounds(140, 160, 90, 30);
+  btn.SetBounds(140, 185, 90, 30);
   btn.Caption := 'Ejecutar';
   btn.Default := True;
   btn.ModalResult := mrOk;
 
   btn := TButton.Create(Self);
   btn.Parent := Self;
-  btn.SetBounds(240, 160, 90, 30);
+  btn.SetBounds(240, 185, 90, 30);
   btn.Caption := 'Cancelar';
   btn.Cancel := True;
   btn.ModalResult := mrCancel;
@@ -119,8 +133,14 @@ var
 begin
   dlg := TSaveDialog.Create(Self);
   try
-    dlg.Filter := 'GeoPackage|*.gpkg';
-    dlg.DefaultExt := 'gpkg';
+    if (FFormat <> nil) and (FFormat.ItemIndex = 1) then begin
+      dlg.Filter := 'GeoParquet|*.parquet';
+      dlg.DefaultExt := 'parquet';
+    end
+    else begin
+      dlg.Filter := 'GeoPackage|*.gpkg';
+      dlg.DefaultExt := 'gpkg';
+    end;
     if dlg.Execute then
       FEditOut.Text := dlg.FileName;
   finally
@@ -147,6 +167,12 @@ begin
     ModalResult := mrNone;
     Exit;
   end;
+
+  { Sincronizar la extensión con el formato elegido. }
+  if FFormat.ItemIndex = 1 then
+    FEditOut.Text := ChangeFileExt(FEditOut.Text, '.parquet')
+  else
+    FEditOut.Text := ChangeFileExt(FEditOut.Text, '.gpkg');
 
   a := SelectedLayer(FComboA);
   if a = nil then begin
@@ -206,6 +232,7 @@ begin
 
   FEditDist.Enabled := (Op = aoBuffer);
   FComboB.Enabled := (Op <> aoBuffer);
+  FFormat.ItemIndex := 0;
 
   tmp := IncludeTrailingPathDelimiter(GetEnvironmentVariable('TEMP')) +
          'analisis.gpkg';

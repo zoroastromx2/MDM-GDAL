@@ -31,6 +31,8 @@ type
       const OutFile, OutLayerName: string): Boolean;
     class function Union(const LayerA, LayerB: TVectorLayer;
       const OutFile, OutLayerName: string): Boolean;
+    class function ExportToParquet(const Layer: TVectorLayer;
+      const OutFile: string): Boolean;
   end;
 
 implementation
@@ -49,11 +51,17 @@ end;
 class function TVectorAnalysis.CreateResultDataSource(const OutFile: string): OGRDataSourceH;
 var
   drv: OGRSFDriverH;
-  utf8: UTF8String;
+  utf8, drvUtf8: UTF8String;
+  driverName: string;
 begin
-  drv := OGRGetDriverByName(PAnsiChar(AnsiString('GPKG')));
+  if SameText(ExtractFileExt(OutFile), '.parquet') then
+    driverName := 'Parquet'
+  else
+    driverName := 'GPKG';
+  drvUtf8 := UTF8String(driverName);
+  drv := OGRGetDriverByName(PAnsiChar(drvUtf8));
   if drv = nil then
-    raise EAnalysisError.Create('No se encontró el driver GPKG.');
+    raise EAnalysisError.Create('No se encontró el driver ' + driverName + '.');
   utf8 := UTF8String(OutFile);
   Result := OGR_Dr_CreateDataSource(drv, PAnsiChar(utf8), nil);
   if Result = nil then
@@ -201,6 +209,38 @@ begin
       OGR_F_Destroy(feat);
       feat := OGR_L_GetNextFeature(LayerB.OgrLayer);
     end;
+    Result := True;
+  finally
+    OGRReleaseDataSource(dst);
+  end;
+end;
+
+class function TVectorAnalysis.ExportToParquet(const Layer: TVectorLayer;
+  const OutFile: string): Boolean;
+var
+  drv: OGRSFDriverH;
+  dst: OGRDataSourceH;
+  copied: OGRLayerH;
+  utf8, nameUtf8: UTF8String;
+begin
+  Result := False;
+  if (Layer = nil) or (Layer.OgrLayer = nil) then
+    raise EAnalysisError.Create('Capa de origen no válida.');
+
+  drv := OGRGetDriverByName(PAnsiChar(AnsiString('Parquet')));
+  if drv = nil then
+    raise EAnalysisError.Create('No se encontró el driver Parquet.');
+
+  utf8 := UTF8String(OutFile);
+  dst := OGR_Dr_CreateDataSource(drv, PAnsiChar(utf8), nil);
+  if dst = nil then
+    raise EAnalysisError.Create('No se pudo crear el archivo de salida: ' + OutFile);
+
+  try
+    nameUtf8 := UTF8String(Layer.LayerName);
+    copied := OGR_DS_CopyLayer(dst, Layer.OgrLayer, PAnsiChar(nameUtf8), nil);
+    if copied = nil then
+      raise EAnalysisError.Create('No se pudo copiar la capa a Parquet.');
     Result := True;
   finally
     OGRReleaseDataSource(dst);
