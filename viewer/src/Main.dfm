@@ -32,6 +32,10 @@
         Caption = 'Abrir...'
         OnClick = miFileOpenClick
       end
+      object miFileSaveAs: TMenuItem
+        Caption = 'Guardar como...'
+        OnClick = miFileSaveAsClick
+      end
       object N1: TMenuItem
         Caption = '-'
       end
@@ -73,6 +77,21 @@
       object miViewAttributes: TMenuItem
         Caption = 'Atributos de la capa...'
         OnClick = miViewAttributesClick
+      end
+    end
+    object miAnalysis: TMenuItem
+      Caption = 'An'#225'lisis'
+      object miAnalysisBuffer: TMenuItem
+        Caption = 'Buffer...'
+        OnClick = miAnalysisBufferClick
+      end
+      object miAnalysisIntersection: TMenuItem
+        Caption = 'Intersecci'#243'n...'
+        OnClick = miAnalysisIntersectionClick
+      end
+      object miAnalysisUnion: TMenuItem
+        Caption = 'Uni'#243'n...'
+        OnClick = miAnalysisUnionClick
       end
     end
     object miHelp: TMenuItem

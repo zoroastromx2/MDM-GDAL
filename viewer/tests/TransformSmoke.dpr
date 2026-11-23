@@ -5,6 +5,7 @@
 uses
   GeometryModel,
   MapView,
+  SpatialIndex,
   SysUtils;
 
 var
@@ -157,6 +158,64 @@ begin
   CheckClose(d, 1, 1e-6, 'distancia al punto mas cercano');
 end;
 
+procedure TestSpatialIndex;
+var
+  si: TSpatialIndex;
+  entries: array of TIndexEntry;
+  res: TArray<Integer>;
+
+  function HasIndex(const Arr: TArray<Integer>; Value: Integer): Boolean;
+  var
+    j: Integer;
+  begin
+    for j := 0 to High(Arr) do
+      if Arr[j] = Value then begin
+        Result := True;
+        Exit;
+      end;
+    Result := False;
+  end;
+
+begin
+  SetLength(entries, 4);
+  entries[0].Box := MakeBox(0, 0, 10, 10);    entries[0].Index := 0;
+  entries[1].Box := MakeBox(20, 20, 30, 30);  entries[1].Index := 1;
+  entries[2].Box := MakeBox(5, 5, 15, 15);    entries[2].Index := 2;
+  entries[3].Box := MakeBox(-5, -5, 1, 1);    entries[3].Index := 3;
+
+  si := TSpatialIndex.Create;
+  try
+    si.Build(entries);
+
+    res := si.Query(MakeBox(0, 0, 10, 10));
+    Check(Length(res) = 3, 'r-tree: solape devuelve 3');
+    Check(HasIndex(res, 0), 'r-tree: contiene 0');
+    Check(HasIndex(res, 2), 'r-tree: contiene 2');
+    Check(HasIndex(res, 3), 'r-tree: contiene 3');
+
+    res := si.Query(MakeBox(20, 20, 30, 30));
+    Check(Length(res) = 1, 'r-tree: individual');
+    Check(HasIndex(res, 1), 'r-tree: contiene 1');
+
+    res := si.Query(MakeBox(100, 100, 110, 110));
+    Check(Length(res) = 0, 'r-tree: vacío');
+
+    res := si.Query(MakeBox(-100, -100, 100, 100));
+    Check(Length(res) = 4, 'r-tree: total');
+  finally
+    si.Free;
+  end;
+
+  si := TSpatialIndex.Create;
+  try
+    si.Build([]);
+    res := si.Query(MakeBox(0, 0, 1, 1));
+    Check(Length(res) = 0, 'r-tree: árbol vacío');
+  finally
+    si.Free;
+  end;
+end;
+
 begin
   Failed := 0;
   Checks := 0;
@@ -164,6 +223,7 @@ begin
   TestGeometryModel;
   TestMapView;
   TestHitTest;
+  TestSpatialIndex;
 
   if Failed = 0 then
     WriteLn(Format('OK: %d checks passed', [Checks]))

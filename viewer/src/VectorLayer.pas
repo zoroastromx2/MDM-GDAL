@@ -7,7 +7,8 @@ uses
   System.UITypes,
   gdalcore,
   ogr,
-  GeometryModel;
+  GeometryModel,
+  SpatialIndex;
 
 type
   EVectorLayerError = class(Exception);
@@ -18,9 +19,25 @@ type
     Current, Total: Integer) of object;
 
   {
-    Abre un archivo vectorial con OGR, extrae todas las entidades a un modelo
-    en memoria (GeometryModel) y cierra el datasource. El resto de la app no
-    depende de handles OGR.
+    Dueño compartido de un OGRDataSourceH. Varias TVectorLayer de un mismo
+    archivo comparten el datasource; se cierra cuando la última capa lo libera.
+  }
+  TDataSourceOwner = class
+  private
+    FHandle: OGRDataSourceH;
+    FRefCount: Integer;
+  public
+    constructor Create(AHandle: OGRDataSourceH);
+    destructor Destroy; override;
+    procedure AddRef;
+    procedure Release;
+    property Handle: OGRDataSourceH read FHandle;
+  end;
+
+  {
+    Abre un archivo vectorial con OGR, extrae las entidades a un modelo en
+    memoria (GeometryModel) y conserva el datasource/layer abiertos para leer
+    atributos e identificar sin reabrir.
   }
   TVectorLayer = class
   private
@@ -37,11 +54,17 @@ type
     FFillColor: TColor;
     FLineColor: TColor;
     FLineWidth: Integer;
+    FOwner: TDataSourceOwner;
+    FLayer: OGRLayerH;
+    FSpatialIndex: TSpatialIndex;
+    FHasGeometry: Boolean;
     procedure ExtractRing(geom: OGRGeometryH; var Ring: TPointArray);
     function GeometryToModel(geom: OGRGeometryH): TFeatureGeometry;
     procedure ExtractLayer(layer: OGRLayerH);
+    function GetDataSource: OGRDataSourceH;
   public
     constructor Create;
+    destructor Destroy; override;
     procedure Load(const FileName: string;
       Progress: TLoadProgressEvent = nil);
     procedure Clear;
@@ -50,14 +73,18 @@ type
     function GetFeatureAttributes(FeatureIndex: Integer;
       out Names, Values: TStringArray): Boolean;
     procedure ForEachAttributeRow(const Callback: TAttributeRowEvent);
+    function IdentifyAtWorld(const P: TPointD; Tolerance: Double): Integer;
 
     property FileName: string read FFileName;
+    property DataSource: OGRDataSourceH read GetDataSource;
+    property OgrLayer: OGRLayerH read FLayer;
     property LayerIndex: Integer read FLayerIndex;
     property LayerName: string read FLayerName;
     property Features: TFeatureArray read FFeatures;
     property Extent: TExtent read FExtent;
     property FieldCount: Integer read FFieldCount;
     property FieldNames: TStringArray read FFieldNames;
+    property HasGeometry: Boolean read FHasGeometry;
     property Visible: Boolean read FVisible write FVisible;
     property FillEnabled: Boolean read FFillEnabled write FFillEnabled;
     property FillColor: TColor read FFillColor write FFillColor;
@@ -68,30 +95,81 @@ type
 
 implementation
 
+{ TDataSourceOwner }
+
+constructor TDataSourceOwner.Create(AHandle: OGRDataSourceH);
+begin
+  inherited Create;
+  FHandle := AHandle;
+  FRefCount := 0;
+end;
+
+destructor TDataSourceOwner.Destroy;
+begin
+  if FHandle <> nil then
+    OGRReleaseDataSource(FHandle);
+  inherited Destroy;
+end;
+
+procedure TDataSourceOwner.AddRef;
+begin
+  Inc(FRefCount);
+end;
+
+procedure TDataSourceOwner.Release;
+begin
+  Dec(FRefCount);
+  if FRefCount <= 0 then
+    Free;
+end;
+
 constructor TVectorLayer.Create;
 begin
   inherited Create;
   FVisible := True;
   FFillEnabled := True;
-  FFillColor := $00FF0000;   // azul (BGR)
-  FLineColor := $00FF0000;   // azul
+  FFillColor := $FAEA8F00;   // azul (BGR)
+  FLineColor := $F4D10B00;   // azul #
   FLineWidth := 1;
+  FSpatialIndex := TSpatialIndex.Create;
   ExtentReset(FExtent);
+end;
+
+destructor TVectorLayer.Destroy;
+begin
+  FSpatialIndex.Free;
+  if FOwner <> nil then
+    FOwner.Release;
+  inherited Destroy;
 end;
 
 procedure TVectorLayer.Clear;
 begin
+  if FOwner <> nil then
+    FOwner.Release;
+  FOwner := nil;
+  FLayer := nil;
   FFeatures := nil;
   FLayerName := '';
   FFileName := '';
   FFieldCount := 0;
   FFieldNames := nil;
+  FLayerIndex := 0;
+  FHasGeometry := False;
   ExtentReset(FExtent);
 end;
 
 function TVectorLayer.FeatureCount: Integer;
 begin
   Result := Length(FFeatures);
+end;
+
+function TVectorLayer.GetDataSource: OGRDataSourceH;
+begin
+  if FOwner <> nil then
+    Result := FOwner.Handle
+  else
+    Result := nil;
 end;
 
 procedure TVectorLayer.ExtractRing(geom: OGRGeometryH; var Ring: TPointArray);
@@ -179,8 +257,11 @@ var
   fldDefn: OGRFieldDefnH;
   fieldCount, i, n, count: Integer;
   featRec: TFeature;
+  entries: array of TIndexEntry;
+  featExt: TExtent;
 begin
   featDefn := OGR_L_GetLayerDefn(layer);
+  FHasGeometry := OGR_FD_GetGeomType(featDefn) <> wkbNone;
   fieldCount := OGR_FD_GetFieldCount(featDefn);
   FFieldCount := fieldCount;
   FLayerName := UTF8ToString(OGR_L_GetName(layer));
@@ -195,6 +276,7 @@ begin
   if count < 0 then
     count := 0;
   SetLength(FFeatures, count);
+  SetLength(entries, count);
   n := 0;
 
   ExtentReset(FExtent);
@@ -202,12 +284,31 @@ begin
   OGR_L_ResetReading(layer);
   feat := OGR_L_GetNextFeature(layer);
   while feat <> nil do begin
-    if n >= Length(FFeatures) then
+    if n >= Length(FFeatures) then begin
       SetLength(FFeatures, n + 1024);
+      SetLength(entries, n + 1024);
+    end;
 
     featRec.FID := OGR_F_GetFID(feat);
     featRec.Geometry := GeometryToModel(OGR_F_GetGeometryRef(feat));
-    GeometryExtent(featRec.Geometry, FExtent);
+
+    { bbox por entidad (una sola travesía) + extensión de la capa }
+    ExtentReset(featExt);
+    GeometryExtent(featRec.Geometry, featExt);
+    if not featExt.IsEmpty then begin
+      if FExtent.IsEmpty then
+        FExtent := featExt
+      else begin
+        if featExt.MinX < FExtent.MinX then FExtent.MinX := featExt.MinX;
+        if featExt.MinY < FExtent.MinY then FExtent.MinY := featExt.MinY;
+        if featExt.MaxX > FExtent.MaxX then FExtent.MaxX := featExt.MaxX;
+        if featExt.MaxY > FExtent.MaxY then FExtent.MaxY := featExt.MaxY;
+      end;
+      entries[n].Box := MakeBox(featExt.MinX, featExt.MinY, featExt.MaxX, featExt.MaxY);
+    end
+    else
+      entries[n].Box := MakeBox(0, 0, 0, 0);
+    entries[n].Index := n;
 
     FFeatures[n] := featRec;
     Inc(n);
@@ -219,6 +320,9 @@ begin
     feat := OGR_L_GetNextFeature(layer);
   end;
   SetLength(FFeatures, n);
+  SetLength(entries, n);
+
+  FSpatialIndex.Build(entries);
 
   if Assigned(FProgress) then begin
     if count > 0 then
@@ -234,6 +338,7 @@ var
   utf8: UTF8String;
   ds: OGRDataSourceH;
   layer: OGRLayerH;
+  owner: TDataSourceOwner;
 begin
   Clear;
   FFileName := FileName;
@@ -246,6 +351,8 @@ begin
   if ds = nil then
     raise EVectorLayerError.Create('No se pudo abrir el archivo: ' + FileName);
 
+  owner := TDataSourceOwner.Create(ds);
+  owner.AddRef;   // ref del creador (protege el handle durante la extraccion)
   try
     if OGR_DS_GetLayerCount(ds) = 0 then
       raise EVectorLayerError.Create('El archivo no contiene capas: ' + FileName);
@@ -255,8 +362,12 @@ begin
       raise EVectorLayerError.Create('No se pudo obtener la capa 0.');
 
     ExtractLayer(layer);
+
+    FLayer := layer;
+    FOwner := owner;
+    owner.AddRef;   // ref de esta capa
   finally
-    OGRReleaseDataSource(ds);
+    owner.Release;  // libera la ref del creador
   end;
 end;
 
@@ -266,6 +377,7 @@ var
   utf8: UTF8String;
   ds: OGRDataSourceH;
   layer: OGRLayerH;
+  owner: TDataSourceOwner;
   count, i: Integer;
 begin
   OGRRegisterAll;
@@ -274,34 +386,44 @@ begin
   if ds = nil then
     raise EVectorLayerError.Create('No se pudo abrir el archivo: ' + FileName);
 
+  owner := TDataSourceOwner.Create(ds);
+  owner.AddRef;   // ref del creador
   try
-    count := OGR_DS_GetLayerCount(ds);
-    if count = 0 then
-      raise EVectorLayerError.Create('El archivo no contiene capas: ' + FileName);
+    try
+      count := OGR_DS_GetLayerCount(ds);
+      if count = 0 then
+        raise EVectorLayerError.Create('El archivo no contiene capas: ' + FileName);
 
-    SetLength(Result, count);
-    for i := 0 to count - 1 do begin
-      layer := OGR_DS_GetLayer(ds, i);
-      if layer = nil then
-        raise EVectorLayerError.Create(Format('No se pudo obtener la capa %d.', [i]));
+      SetLength(Result, count);
+      for i := 0 to count - 1 do begin
+        layer := OGR_DS_GetLayer(ds, i);
+        if layer = nil then
+          raise EVectorLayerError.Create(Format('No se pudo obtener la capa %d.', [i]));
 
-      Result[i] := TVectorLayer.Create;
-      Result[i].FFileName := FileName;
-      Result[i].FLayerIndex := i;
-      Result[i].FProgress := Progress;
-      Result[i].ExtractLayer(layer);
+        Result[i] := TVectorLayer.Create;
+        Result[i].FFileName := FileName;
+        Result[i].FLayerIndex := i;
+        Result[i].FProgress := Progress;
+        Result[i].FOwner := owner;
+        owner.AddRef;   // ref de esta capa
+        Result[i].FLayer := layer;
+        Result[i].ExtractLayer(layer);
+      end;
+    except
+      for i := 0 to High(Result) do
+        if Result[i] <> nil then
+          Result[i].Free;
+      Result := nil;
+      raise;
     end;
   finally
-    OGRReleaseDataSource(ds);
+    owner.Release;  // libera la ref del creador
   end;
 end;
 
 function TVectorLayer.GetFeatureAttributes(FeatureIndex: Integer;
   out Names, Values: TStringArray): Boolean;
 var
-  utf8: UTF8String;
-  ds: OGRDataSourceH;
-  layer: OGRLayerH;
   feat: OGRFeatureH;
   featDefn: OGRFeatureDefnH;
   fieldCount, i: Integer;
@@ -312,84 +434,78 @@ begin
 
   if (FeatureIndex < 0) or (FeatureIndex >= Length(FFeatures)) then
     Exit;
-  if FFileName = '' then
+  if FLayer = nil then
     Exit;
 
-  OGRRegisterAll;
-  utf8 := UTF8String(FFileName);
-  ds := OGROpen(PAnsiChar(utf8), 0, nil);
-  if ds = nil then
-    raise EVectorLayerError.Create('No se pudo abrir el archivo: ' + FFileName);
+  feat := OGR_L_GetFeature(FLayer, LongInt(FFeatures[FeatureIndex].FID));
+  if feat = nil then
+    Exit;
 
   try
-    layer := OGR_DS_GetLayer(ds, FLayerIndex);
-    if layer = nil then
-      raise EVectorLayerError.Create(Format('No se pudo obtener la capa %d.', [FLayerIndex]));
-
-    feat := OGR_L_GetFeature(layer, LongInt(FFeatures[FeatureIndex].FID));
-    if feat = nil then
-      Exit;
-
-    try
-      featDefn := OGR_L_GetLayerDefn(layer);
-      fieldCount := OGR_FD_GetFieldCount(featDefn);
-      SetLength(Names, fieldCount);
-      SetLength(Values, fieldCount);
-      for i := 0 to fieldCount - 1 do begin
-        Names[i] := UTF8ToString(OGR_Fld_GetNameRef(OGR_FD_GetFieldDefn(featDefn, i)));
-        Values[i] := UTF8ToString(OGR_F_GetFieldAsString(feat, i));
-      end;
-      Result := True;
-    finally
-      OGR_F_Destroy(feat);
+    featDefn := OGR_L_GetLayerDefn(FLayer);
+    fieldCount := OGR_FD_GetFieldCount(featDefn);
+    SetLength(Names, fieldCount);
+    SetLength(Values, fieldCount);
+    for i := 0 to fieldCount - 1 do begin
+      Names[i] := UTF8ToString(OGR_Fld_GetNameRef(OGR_FD_GetFieldDefn(featDefn, i)));
+      Values[i] := UTF8ToString(OGR_F_GetFieldAsString(feat, i));
     end;
+    Result := True;
   finally
-    OGRReleaseDataSource(ds);
+    OGR_F_Destroy(feat);
   end;
 end;
 
 procedure TVectorLayer.ForEachAttributeRow(const Callback: TAttributeRowEvent);
 var
-  utf8: UTF8String;
-  ds: OGRDataSourceH;
-  layer: OGRLayerH;
   feat: OGRFeatureH;
   featDefn: OGRFeatureDefnH;
   fieldCount, i: Integer;
   Values: TStringArray;
 begin
-  if (FFileName = '') or (not Assigned(Callback)) then
+  if (FLayer = nil) or (not Assigned(Callback)) then
     Exit;
 
-  OGRRegisterAll;
-  utf8 := UTF8String(FFileName);
-  ds := OGROpen(PAnsiChar(utf8), 0, nil);
-  if ds = nil then
-    raise EVectorLayerError.Create('No se pudo abrir el archivo: ' + FFileName);
+  featDefn := OGR_L_GetLayerDefn(FLayer);
+  fieldCount := OGR_FD_GetFieldCount(featDefn);
+  SetLength(Values, fieldCount);
 
-  try
-    layer := OGR_DS_GetLayer(ds, FLayerIndex);
-    if layer = nil then
-      raise EVectorLayerError.Create(Format('No se pudo obtener la capa %d.', [FLayerIndex]));
-
-    featDefn := OGR_L_GetLayerDefn(layer);
-    fieldCount := OGR_FD_GetFieldCount(featDefn);
-    SetLength(Values, fieldCount);
-
-    OGR_L_ResetReading(layer);
-    feat := OGR_L_GetNextFeature(layer);
-    while feat <> nil do begin
-      for i := 0 to fieldCount - 1 do
-        Values[i] := UTF8ToString(OGR_F_GetFieldAsString(feat, i));
-      if not Callback(Values) then begin
-        OGR_F_Destroy(feat);
-        Break;
-      end;
+  OGR_L_ResetReading(FLayer);
+  feat := OGR_L_GetNextFeature(FLayer);
+  while feat <> nil do begin
+    for i := 0 to fieldCount - 1 do
+      Values[i] := UTF8ToString(OGR_F_GetFieldAsString(feat, i));
+    if not Callback(Values) then begin
       OGR_F_Destroy(feat);
-      feat := OGR_L_GetNextFeature(layer);
+      Break;
     end;
-  finally
-    OGRReleaseDataSource(ds);
+    OGR_F_Destroy(feat);
+    feat := OGR_L_GetNextFeature(FLayer);
+  end;
+end;
+
+function TVectorLayer.IdentifyAtWorld(const P: TPointD; Tolerance: Double): Integer;
+var
+  box: TBBox;
+  candidates: TArray<Integer>;
+  i, idx: Integer;
+  d, bestD: Double;
+begin
+  Result := -1;
+  if (FSpatialIndex = nil) or (Length(FFeatures) = 0) then
+    Exit;
+
+  box := MakeBox(P.X - Tolerance, P.Y - Tolerance, P.X + Tolerance, P.Y + Tolerance);
+  candidates := FSpatialIndex.Query(box);
+
+  bestD := Tolerance;
+  for i := 0 to High(candidates) do begin
+    idx := candidates[i];
+    d := DistanceToGeometry(P, FFeatures[idx].Geometry);
+    if d <= bestD then begin
+      bestD := d;
+      Result := idx;
+    end;
   end;
 end;
 

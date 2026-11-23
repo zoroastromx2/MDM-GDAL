@@ -1,2 +1,10 @@
 /viewer/src/__history
 /viewer/Win64
+/tasks
+tasks
+dcu64
+/viewer/tests/dcu
+/viewer/tests/bin64
+
+# datos de prueba generados (análisis/exportaciones)
+*.gpkg

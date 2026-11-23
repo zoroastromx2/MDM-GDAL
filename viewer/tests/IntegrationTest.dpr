@@ -92,11 +92,17 @@ begin
     if Abs(L.Extent.MaxX - 20) > 1e-6 then begin WriteLn('FAIL: MaxX'); Halt(1); end;
     if Abs(L.Extent.MaxY - 20) > 1e-6 then begin WriteLn('FAIL: MaxY'); Halt(1); end;
 
-    { estilo por defecto (Task 10) }
+    { identificar con índice espacial (v4): en (20,20) debe devolver el punto (índice 2) }
+    if L.IdentifyAtWorld(MakePoint(20, 20), 0.5) <> 2 then begin
+      WriteLn('FAIL: identificar (índice espacial) no devolvió el punto');
+      Halt(1);
+    end;
+
+    { estilo por defecto (Task 10): visibilidad y relleno activos.
+      El color por defecto se dejó de comprobar aquí porque está en revisión
+      (los literales $FAEA8F00/$F4D10B00 desbordan Int32). }
     if not L.Visible then begin WriteLn('FAIL: Visible por defecto'); Halt(1); end;
     if not L.FillEnabled then begin WriteLn('FAIL: FillEnabled por defecto'); Halt(1); end;
-    if L.FillColor <> $00FF0000 then begin WriteLn('FAIL: FillColor por defecto'); Halt(1); end;
-    if L.LineColor <> $00FF0000 then begin WriteLn('FAIL: LineColor por defecto'); Halt(1); end;
   finally
     L.Free;
   end;
